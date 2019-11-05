@@ -1,23 +1,31 @@
 //------------------------------------------------------------------------------
-// GB_eWise: C<M> = accum (C, A+B) or A.*B
+// GB_ewise: C<M> = accum (C, A+B) or A.*B
 //------------------------------------------------------------------------------
 
-// SuiteSparse:GraphBLAS, Timothy A. Davis, (c) 2017-2018, All Rights Reserved.
+// SuiteSparse:GraphBLAS, Timothy A. Davis, (c) 2017-2019, All Rights Reserved.
 // http://suitesparse.com   See GraphBLAS/Doc/License.txt for license.
 
 //------------------------------------------------------------------------------
 
-// C<M> = accum (C,A+B), A.*B and variations.
+// C<M> = accum (C,A+B), A.*B and variations.  The input matrices A and B are
+// optionally transposed.  Does the work for GrB_eWiseAdd_* and
+// GrB_eWiseMult_*.  Handles all cases of the mask.
 
-// The input matrices A and B are optionally transposed.
+#include "GB_ewise.h"
+#include "GB_add.h"
+#include "GB_emult.h"
+#include "GB_transpose.h"
+#include "GB_accum_mask.h"
 
-// Not user-callable.  Does the work for four user-callable functions:
-//      GrB_eWiseAdd_*_BinaryOp
-//      GrB_eWiseMult_*_BinaryOp
+#define GB_FREE_ALL         \
+{                           \
+    GB_MATRIX_FREE (&T) ;   \
+    GB_MATRIX_FREE (&AT) ;  \
+    GB_MATRIX_FREE (&BT) ;  \
+    GB_MATRIX_FREE (&MT) ;  \
+}
 
-#include "GB.h"
-
-GrB_Info GB_eWise                   // C<M> = accum (C, A+B) or A.*B
+GrB_Info GB_ewise                   // C<M> = accum (C, A+B) or A.*B
 (
     GrB_Matrix C,                   // input/output matrix for results
     const bool C_replace,           // if true, clear C before writing to it
@@ -39,33 +47,29 @@ GrB_Info GB_eWise                   // C<M> = accum (C, A+B) or A.*B
     // check inputs
     //--------------------------------------------------------------------------
 
-    ASSERT (GB_ALIAS_OK3 (C, M, A, B)) ;
+    // C may be aliased with M, A, and/or B
+
+    GrB_Info info ;
+    GrB_Matrix MT = NULL, BT = NULL, AT = NULL, T = NULL ;
 
     GB_RETURN_IF_FAULTY (accum) ;
 
-    ASSERT_OK (GB_check (C, "C input for GB_eWise", GB0)) ;
-    ASSERT_OK_OR_NULL (GB_check (M, "M for GB_eWise", GB0)) ;
-    ASSERT_OK_OR_NULL (GB_check (accum, "accum for GB_eWise", GB0)) ;
-    ASSERT_OK (GB_check (op, "op for GB_eWise", GB0)) ;
-    ASSERT_OK (GB_check (A, "A for GB_eWise", GB0)) ;
-    ASSERT_OK (GB_check (B, "B for GB_eWise", GB0)) ;
+    ASSERT_OK (GB_check (C, "C input for GB_ewise", GB0)) ;
+    ASSERT_OK_OR_NULL (GB_check (M, "M for GB_ewise", GB0)) ;
+    ASSERT_OK_OR_NULL (GB_check (accum, "accum for GB_ewise", GB0)) ;
+    ASSERT_OK (GB_check (op, "op for GB_ewise", GB0)) ;
+    ASSERT_OK (GB_check (A, "A for GB_ewise", GB0)) ;
+    ASSERT_OK (GB_check (B, "B for GB_ewise", GB0)) ;
 
     // T has the same type as the output z for z=op(a,b)
     GrB_Type T_type = op->ztype ;
 
     // check domains and dimensions for C<M> = accum (C,T)
-    GrB_Info info = GB_compatible (C->type, C, M, accum, T_type, Context) ;
-    if (info != GrB_SUCCESS)
-    { 
-        return (info) ;
-    }
+    GB_OK (GB_compatible (C->type, C, M, accum, T_type, Context)) ;
 
     // T=op(A,B) via op operator, so A and B must be compatible with z=op(a,b)
-    info = GB_BinaryOp_compatible (op, NULL, A->type, B->type, 0, Context) ;
-    if (info != GrB_SUCCESS)
-    { 
-        return (info) ;
-    }
+    GB_OK (GB_BinaryOp_compatible (op, NULL, A->type, B->type,
+        GB_ignore_code, Context)) ;
 
     if (eWiseAdd)
     {
@@ -111,7 +115,7 @@ GrB_Info GB_eWise                   // C<M> = accum (C, A+B) or A.*B
     GB_RETURN_IF_QUICK_MASK (C, C_replace, M, Mask_comp) ;
 
     // delete any lingering zombies and assemble any pending tuples
-    GB_WAIT (C) ;
+    // GB_WAIT (C) ;
     GB_WAIT (M) ;
     GB_WAIT (A) ;
     GB_WAIT (B) ;
@@ -122,141 +126,128 @@ GrB_Info GB_eWise                   // C<M> = accum (C, A+B) or A.*B
 
     // CSC/CSR format of T is same as C.  Conform A and B to the format of C.
 
-    bool is_csc = C->is_csc ;
-    if (is_csc != A->is_csc)
+    bool C_is_csc = C->is_csc ;
+    if (C_is_csc != A->is_csc)
     { 
         // Flip the sense of A_transpose.  For example, if C is CSC and A is
         // CSR, and A_transpose is true, then C=A'+B is being computed.  But
         // this is the same as C=A+B where A is treated as if it is CSC.
-        // GB_add and GB_emult are agnostic to the CSR/CSC
-        // format of their inputs.
         A_transpose = !A_transpose ;
     }
 
-    if (is_csc != B->is_csc)
+    if (C_is_csc != B->is_csc)
     { 
         // Flip the sense of B_transpose.
         B_transpose = !B_transpose ;
     }
 
+    if (A_transpose && B_transpose)
+    { 
+        // T=A'+B' replaced with T=(A+B)'
+        A_transpose = false ;
+        B_transpose = false ;
+        C_is_csc = !C_is_csc ;
+    }
+
     //--------------------------------------------------------------------------
-    // T = A+B, A'+B, A+B', or A'+B'
+    // decide when to apply the mask
     //--------------------------------------------------------------------------
 
-    GrB_Matrix T ;
+    // GB_add and GB_emult can apply any non-complemented mask, but it is
+    // faster to exploit the mask in GB_add / GB_emult only when it is very
+    // sparse compared with A and B.
 
-    if (A_transpose)
+    // check the CSR/CSC format of M
+    bool M_is_csc = (M == NULL) ? C_is_csc : M->is_csc ;
+
+    bool mask_applied = false ;
+    GrB_Matrix M1 = NULL ;
+
+    if (M != NULL && !Mask_comp && GB_MASK_VERY_SPARSE (M, A, B))
     {
-        if (B_transpose)
-        {
-
-            //------------------------------------------------------------------
-            // T = A'+B'
-            //------------------------------------------------------------------
-
-            // T = A + B, with flipped CSR/CSC format so GB_accum_mask does C=T'
-            if (eWiseAdd)
-            { 
-                info = GB_add (&T, T_type, !is_csc, A, B, op, Context) ;
-            }
-            else
-            { 
-                info = GB_emult (&T, T_type, !is_csc, A, B, op, Context) ;
-            }
-
+        // the mask is present, not complemented, and very sparse; use it
+        // during GB_add and GB_emult to reduce memory and work.
+        M1 = M ;
+        if (C_is_csc != M_is_csc)
+        { 
+            GB_OK (GB_transpose (&MT, GrB_BOOL, C_is_csc, M, NULL, Context)) ;
+            M1 = MT ;
         }
-        else
-        {
+        mask_applied = true ;
+    }
 
-            //------------------------------------------------------------------
-            // T = A'+B
-            //------------------------------------------------------------------
+    //--------------------------------------------------------------------------
+    // transpose A if needed
+    //--------------------------------------------------------------------------
 
-            // FUTURE: for emult, if B is much sparser than A then do T'=A+B'
+    GrB_Matrix A1 = A ;
+    if (A_transpose)
+    { 
+        // AT = A'
+        // transpose: no typecast, no op, not in place
+        GB_OK (GB_transpose (&AT, NULL, C_is_csc, A, NULL, Context)) ;
+        A1 = AT ;
+    }
 
-            // AT = A'
-            GrB_Matrix AT = NULL ;
-            // transpose: no typecast, no op, not in place
-            info = GB_transpose (&AT, NULL, is_csc, A, NULL, Context) ;
-            if (info != GrB_SUCCESS)
-            { 
-                return (info) ;
-            }
+    //--------------------------------------------------------------------------
+    // transpose B if needed
+    //--------------------------------------------------------------------------
 
-            // T = AT + B
-            if (eWiseAdd)
-            { 
-                info = GB_add (&T, T_type, is_csc, AT, B, op, Context) ;
-            }
-            else
-            { 
-                info = GB_emult (&T, T_type, is_csc, AT, B, op, Context) ;
-            }
-            GB_MATRIX_FREE (&AT) ;
+    GrB_Matrix B1 = B ;
+    if (B_transpose)
+    { 
+        // BT = B'
+        // transpose: no typecast, no op, not in place
+        GB_OK (GB_transpose (&BT, NULL, C_is_csc, B, NULL, Context)) ;
+        B1 = BT ;
+    }
 
-        }
+    //--------------------------------------------------------------------------
+    // T = A+B or A.*B
+    //--------------------------------------------------------------------------
+
+    if (eWiseAdd)
+    { 
+        GB_OK (GB_add (&T, T_type, C_is_csc, M1, A1, B1, op, Context)) ;
     }
     else
-    {
-        if (B_transpose)
-        {
-
-            //------------------------------------------------------------------
-            // T = A+B'
-            //------------------------------------------------------------------
-
-            // FUTURE: for emult, if A is much sparser than B then do T'=A'+B
-
-            // BT = B'
-            GrB_Matrix BT = NULL ;
-            // transpose: no typecast, no op, not in place
-            info = GB_transpose (&BT, NULL, is_csc, B, NULL, Context) ;
-            if (info != GrB_SUCCESS)
-            { 
-                return (info) ;
-            }
-
-            // T = A + BT
-            if (eWiseAdd)
-            { 
-                info = GB_add (&T, T_type, is_csc, A, BT, op, Context) ;
-            }
-            else
-            { 
-                info = GB_emult (&T, T_type, is_csc, A, BT, op, Context) ;
-            }
-            GB_MATRIX_FREE (&BT) ;
-
-        }
-        else
-        {
-
-            //------------------------------------------------------------------
-            // T = A+B
-            //------------------------------------------------------------------
-
-            if (eWiseAdd)
-            { 
-                info = GB_add (&T, T_type, is_csc, A, B, op, Context) ;
-            }
-            else
-            { 
-                info = GB_emult (&T, T_type, is_csc, A, B, op, Context) ;
-            }
-        }
+    { 
+        GB_OK (GB_emult (&T, T_type, C_is_csc, M1, A1, B1, op, Context)) ;
     }
 
-    if (info != GrB_SUCCESS)
+    //--------------------------------------------------------------------------
+    // free the transposed matrices
+    //--------------------------------------------------------------------------
+
+    GB_MATRIX_FREE (&AT) ;
+    GB_MATRIX_FREE (&BT) ;
+
+    //--------------------------------------------------------------------------
+    // C<M> = accum (C,T): accumulate the results into C via the mask
+    //--------------------------------------------------------------------------
+
+    if ((accum == NULL) && (C->is_csc == T->is_csc)
+        && (M == NULL || (M != NULL && mask_applied))
+        && (C_replace || GB_NNZ_UPPER_BOUND (C) == 0))
     { 
-        ASSERT (T == NULL) ;            // T has already been freed
+        // C = 0 ; C = (ctype) T ; with the same CSR/CSC format.  The mask M
+        // (if any) has already been applied.  If C is also empty, or to be
+        // cleared anyway, and if accum is not present, then T can be
+        // transplanted directly into C, as C = (ctype) T, typecasting if
+        // needed.  If no typecasting is done then this takes no time at all
+        // and is a pure transplant.  Also conform C to its desired
+        // hypersparsity.
+        GB_MATRIX_FREE (&MT) ;
+        return (GB_transplant_conform (C, C->type, &T, Context)) ;
+    }
+    else
+    { 
+        // C<M> = accum (C,T)
+        // GB_accum_mask also conforms C to its desired hypersparsity
+        info = GB_accum_mask (C, M, MT, accum, &T, C_replace, Mask_comp,
+            Context) ;
+        GB_MATRIX_FREE (&MT) ;
         return (info) ;
     }
-
-    //--------------------------------------------------------------------------
-    // C<M> = accum (C,T): accumulate the results into C via the M
-    //--------------------------------------------------------------------------
-
-    return (GB_accum_mask (C, M, NULL, accum, &T, C_replace, Mask_comp,
-        Context)) ;
 }
 

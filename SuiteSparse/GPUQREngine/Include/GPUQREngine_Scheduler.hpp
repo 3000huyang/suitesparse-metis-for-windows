@@ -27,6 +27,11 @@ size_t ssgpu_maxQueueSize       // return size of scheduler queue
     size_t gpuMemorySize        // size of GPU memory, in bytes
 ) ;
 
+#ifdef WIN32
+typedef size_t new_size;
+#else
+typedef long unsigned int new_size;
+#endif
 class Scheduler
 {
 private:
@@ -90,7 +95,7 @@ public:
     cudaStream_t memoryStreamD2H;
 
     /* Scheduler.cpp */
-    void *operator new(long unsigned int, Scheduler* p){ return p; }
+    void *operator new(new_size, Scheduler* p){ return p; }
     Scheduler(Front *fronts, Int numFronts, size_t gpuMemorySize);
     ~Scheduler();
 

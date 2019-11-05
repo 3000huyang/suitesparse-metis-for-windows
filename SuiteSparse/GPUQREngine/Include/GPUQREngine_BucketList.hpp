@@ -22,6 +22,12 @@
 struct TaskDescriptor;
 class LLBundle;
 
+#ifdef WIN32
+typedef size_t new_size;
+#else
+typedef long unsigned int new_size;
+#endif
+
 class BucketList
 {
 public:
@@ -62,7 +68,7 @@ public:
     int VThead;              // Index of the first available entry in VTlist
 
     // Constructors
-    void *operator new(long unsigned int, BucketList* p)
+    void *operator new(new_size, BucketList* p)
     {
         return p;
     }

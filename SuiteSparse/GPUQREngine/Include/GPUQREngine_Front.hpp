@@ -17,6 +17,11 @@
 #include "GPUQREngine_SparseMeta.hpp"
 #include "GPUQREngine_FrontState.hpp"
 
+#ifdef WIN32
+typedef size_t new_size;
+#else
+typedef long unsigned int new_size;
+#endif
 class Front
 {
 public:
@@ -47,7 +52,7 @@ public:
     /* Debug Fields */
     bool printMe;
 
-    void* operator new(long unsigned int reqMem, Front* ptr){ return ptr; }
+    void* operator new(new_size reqMem, Front* ptr){ return ptr; }
 
     Front(
         Int fids_arg,                   // the front identifier

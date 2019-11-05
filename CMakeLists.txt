@@ -6,6 +6,7 @@
 # -----------------------------------------------------------------
 
 option(HUNTER_ENABLED "Enable Hunter package manager support" OFF)
+option(LAPACK_ENABLED "Enable LAPACK" ON)
 include(cmake/HunterGate.cmake)
 
 HunterGate(
@@ -38,6 +39,7 @@ endif(BUILD_SHARED_LIBS)
 SET(LIBRARY_OUTPUT_PATH ${${PROJECT_NAME}_BINARY_DIR}/lib CACHE PATH "Output directory for libraries" )
 SET(EXECUTABLE_OUTPUT_PATH ${${PROJECT_NAME}_BINARY_DIR}/bin CACHE PATH "Output directory for applications" )
 
+MESSAGE(STATUS "EXE PATH: ${EXECUTABLE_OUTPUT_PATH}")
 # Override "CMAKE_INSTALL_PREFIX", on Windows if not set:
 if(WIN32 AND (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT))
 	set(CMAKE_INSTALL_PREFIX "${${PROJECT_NAME}_BINARY_DIR}/install" CACHE PATH "Prefix prepended to install directories" FORCE)
@@ -217,31 +219,32 @@ if(WITH_CUDA)
 	ENDIF(${CUDA_FOUND})
 endif()
 
-hunter_add_package(LAPACK) # only in effect if HUNTER_ENABLED is set
-# prefer LAPACK config file
-find_package(LAPACK CONFIG)
-if (LAPACK_FOUND AND TARGET blas AND TARGET lapack)
-  message(STATUS "found lapack and blas config file. Linking targets lapack and blas")
-  message(STATUS "- LAPACK_CONFIG: ${LAPACK_CONFIG}")
-  set(SuiteSparse_LINKER_LAPACK_BLAS_LIBS lapack blas)
-  # for suitesparse-config file set method used to find LAPACK (and BLAS)
-  set(SuiteSparse_LAPACK_used_CONFIG YES)
-else()
-  # missing config file or targets, try BLAS and LAPACK
-  find_package(BLAS)
-  find_package(LAPACK)
-  if (BLAS_FOUND AND LAPACK_FOUND)
-    message(STATUS "found lapack and blas config file. Linking targets lapack and blas")
-    message(STATUS "- LAPACK_LIBRARIES: ${LAPACK_LIBRARIES}")
-    message(STATUS "- BLAS_LIBRARIES:   ${BLAS_LIBRARIES}")
-    set(SuiteSparse_LINKER_LAPACK_BLAS_LIBS ${LAPACK_LIBRARIES} ${BLAS_LIBRARIES})
-    # for suitesparse-config file set method used to find LAPACK (and BLAS)
-    set(SuiteSparse_LAPACK_used_CONFIG NO)
-  else () # LAPACK is not found
-    message(FATAL_ERROR "lapack not found")
-  endif()
-endif()
-
+if(LAPACK_ENABLED)
+    hunter_add_package(LAPACK) # only in effect if HUNTER_ENABLED is set
+    # prefer LAPACK config file
+    find_package(LAPACK CONFIG)
+    if (LAPACK_FOUND AND TARGET blas AND TARGET lapack)
+        message(STATUS "found lapack and blas config file. Linking targets lapack and blas")
+        message(STATUS "- LAPACK_CONFIG: ${LAPACK_CONFIG}")
+        set(SuiteSparse_LINKER_LAPACK_BLAS_LIBS lapack blas)
+        # for suitesparse-config file set method used to find LAPACK (and BLAS)
+        set(SuiteSparse_LAPACK_used_CONFIG YES)
+    else()
+        # missing config file or targets, try BLAS and LAPACK
+        find_package(BLAS)
+        find_package(LAPACK)
+        if (BLAS_FOUND AND LAPACK_FOUND)
+            message(STATUS "found lapack and blas config file. Linking targets lapack and blas")
+            message(STATUS "- LAPACK_LIBRARIES: ${LAPACK_LIBRARIES}")
+            message(STATUS "- BLAS_LIBRARIES:   ${BLAS_LIBRARIES}")
+            set(SuiteSparse_LINKER_LAPACK_BLAS_LIBS ${LAPACK_LIBRARIES} ${BLAS_LIBRARIES})
+            # for suitesparse-config file set method used to find LAPACK (and BLAS)
+            set(SuiteSparse_LAPACK_used_CONFIG NO)
+        else () # LAPACK is not found
+            message(FATAL_ERROR "lapack not found")
+        endif()
+    endif()
+endif(LAPACK_ENABLED)
 IF(BUILD_METIS)
 	set(SuiteSparse_LINKER_METIS_LIBS "metis")
 	## namespaced library target for config

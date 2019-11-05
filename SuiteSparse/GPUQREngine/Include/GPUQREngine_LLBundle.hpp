@@ -23,7 +23,11 @@
 
 struct TaskDescriptor;
 class BucketList;
-
+#ifdef WIN32
+typedef size_t new_size;
+#else
+typedef long unsigned int new_size;
+#endif
 class LLBundle
 {
 public:
@@ -68,7 +72,7 @@ public:
 
     TaskType CurrentTask;
 
-    void *operator new(long unsigned int, LLBundle* p){ return p; }
+    void *operator new(new_size, LLBundle* p){ return p; }
     LLBundle(BucketList *buckets, Int panelSize, Int nativeBucket);
 
     // empty LLBundle constructor (currently used, kept for possible future use
