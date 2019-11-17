@@ -6,7 +6,8 @@
 # -----------------------------------------------------------------
 
 option(HUNTER_ENABLED "Enable Hunter package manager support" OFF)
-option(LAPACK_ENABLED "Enable LAPACK" ON)
+option(LAPACK_ENABLED "Enable LAPACK" OFF)
+option(MKL_ENABLED "Enable MKL" OFF)
 include(cmake/HunterGate.cmake)
 
 HunterGate(
@@ -245,6 +246,12 @@ if(LAPACK_ENABLED)
         endif()
     endif()
 endif(LAPACK_ENABLED)
+if(MKL_ENABLED)
+    set(MKL_LIBS mkl_scalapack_ilp64_dll.lib mkl_intel_ilp64_dll.lib mkl_tbb_thread_dll.lib mkl_core_dll.lib mkl_blacs_ilp64_dll.lib msmpi.lib tbb.lib)
+    set(LAPACK_LIBRARIES ${MKL_LIBS})
+    set(BLAS_LIBRARIES ${MKL_LIBS})
+    set(SuiteSparse_LINKER_LAPACK_BLAS_LIBS  ${MKL_LIBS})
+endif()
 IF(BUILD_METIS)
 	set(SuiteSparse_LINKER_METIS_LIBS "metis")
 	## namespaced library target for config
